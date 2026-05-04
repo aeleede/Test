@@ -14,6 +14,8 @@
 //   G = Director (filled) H = Release Year   I = Notes
 //
 // Only blank cells in C, D, F, G are written — your data is never overwritten.
+// If column H is blank, OMDB is searched by title; if multiple movies match
+// you will be prompted to pick the correct one, and the year is written back.
 // ============================================================
 
 const OMDB_API_KEY = 'YOUR_API_KEY_HERE';
@@ -56,6 +58,7 @@ function fillMovieMetadata() {
   let updated = 0;
   let alreadyComplete = 0;
   const notFound = [];
+  const skipped = [];
 
   for (let i = 0; i < allData.length; i++) {
     const row = allData[i];
@@ -78,15 +81,27 @@ function fillMovieMetadata() {
       continue;
     }
 
-    const movieData = fetchFromOmdb_(title, year);
+    const sheetRow = i + 2; // sheet rows are 1-based, data starts at row 2
+    let movieData = null;
 
-    if (!movieData) {
-      notFound.push(`"${title}"${year ? ' (' + year + ')' : ''}`);
-      continue;
+    if (year) {
+      // Year known — exact lookup
+      movieData = fetchByTitle_(title, year);
+      if (!movieData) notFound.push(`"${title}" (${year})`);
+    } else {
+      // No year — search by title and resolve ambiguity
+      const result = resolveBySearch_(title, sheetRow, sheet);
+      if (result === 'skipped') {
+        skipped.push(`"${title}"`);
+        continue;
+      } else if (result === null) {
+        notFound.push(`"${title}"`);
+        continue;
+      }
+      movieData = result;
     }
 
-    // Sheet rows are 1-based; data starts at row 2, so sheetRow = i + 2
-    const sheetRow = i + 2;
+    if (!movieData) continue;
 
     if (missingMpaa && movieData.Rated && movieData.Rated !== 'N/A') {
       sheet.getRange(sheetRow, 3).setValue(movieData.Rated);
@@ -101,28 +116,95 @@ function fillMovieMetadata() {
       sheet.getRange(sheetRow, 7).setValue(movieData.Director);
     }
 
+    // Write back the year if it was blank and we found one
+    if (!year && movieData.Year && movieData.Year !== 'N/A') {
+      sheet.getRange(sheetRow, 8).setValue(movieData.Year);
+    }
+
     updated++;
     Utilities.sleep(250); // Stay well within OMDB rate limits
   }
 
   let summary = `Done!\n\n✓ Updated: ${updated} movie(s)\n✓ Already complete: ${alreadyComplete}`;
+  if (skipped.length > 0) {
+    summary += `\n\nSkipped (you chose to skip):\n${skipped.join('\n')}`;
+  }
   if (notFound.length > 0) {
-    summary += `\n\nCould not find (${notFound.length}):\n${notFound.join('\n')}\n\nTip: Check that the title in column A matches the OMDB title exactly, and that column H has the correct release year.`;
+    summary += `\n\nCould not find (${notFound.length}):\n${notFound.join('\n')}\n\nTip: Check that the title in column A matches the OMDB title exactly.`;
   }
   SpreadsheetApp.getUi().alert(summary);
 }
 
-function fetchFromOmdb_(title, year) {
+// Searches OMDB by title, handles disambiguation, returns full movie data or
+// 'skipped' (user chose to skip) or null (not found / cancelled).
+function resolveBySearch_(title, sheetRow, sheet) {
+  const results = searchOmdb_(title);
+
+  if (!results || results.length === 0) return null;
+
+  // Only one match — use it without prompting
+  if (results.length === 1) {
+    return fetchById_(results[0].imdbID);
+  }
+
+  // Multiple matches — ask the user to pick
+  const ui = SpreadsheetApp.getUi();
+  const lines = results.map((m, idx) => `${idx + 1}. ${m.Title} (${m.Year})`);
+  const prompt =
+    `Multiple matches found for "${title}".\n\n` +
+    `${lines.join('\n')}\n\n` +
+    `Type the number of the correct movie, or 0 to skip:`;
+
+  const response = ui.prompt('Select Movie', prompt, ui.ButtonSet.OK_CANCEL);
+
+  if (response.getSelectedButton() !== ui.Button.OK) return 'skipped';
+
+  const choice = parseInt(response.getResponseText().trim(), 10);
+
+  if (choice === 0) return 'skipped';
+  if (isNaN(choice) || choice < 1 || choice > results.length) {
+    ui.alert(`Invalid selection for "${title}" — skipping.`);
+    return 'skipped';
+  }
+
+  return fetchById_(results[choice - 1].imdbID);
+}
+
+// OMDB title search — returns array of movie results (type=movie only), max 5.
+function searchOmdb_(title) {
+  const url = `https://www.omdbapi.com/?s=${encodeURIComponent(title)}&type=movie&apikey=${OMDB_API_KEY}`;
+  try {
+    const response = UrlFetchApp.fetch(url, { muteHttpExceptions: true });
+    const data = JSON.parse(response.getContentText());
+    if (data.Response !== 'True' || !data.Search) return null;
+    return data.Search.slice(0, 5); // Cap at 5 to keep prompts readable
+  } catch (e) {
+    return null;
+  }
+}
+
+// Fetch full movie details by IMDB ID.
+function fetchById_(imdbId) {
+  const url = `https://www.omdbapi.com/?i=${encodeURIComponent(imdbId)}&apikey=${OMDB_API_KEY}`;
+  try {
+    const response = UrlFetchApp.fetch(url, { muteHttpExceptions: true });
+    const data = JSON.parse(response.getContentText());
+    return data.Response === 'True' ? data : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+// Exact title + optional year lookup.
+function fetchByTitle_(title, year) {
   const params = [
     't=' + encodeURIComponent(title),
     year ? 'y=' + encodeURIComponent(year) : '',
     'apikey=' + OMDB_API_KEY
   ].filter(Boolean).join('&');
 
-  const url = 'https://www.omdbapi.com/?' + params;
-
   try {
-    const response = UrlFetchApp.fetch(url, { muteHttpExceptions: true });
+    const response = UrlFetchApp.fetch(`https://www.omdbapi.com/?${params}`, { muteHttpExceptions: true });
     const data = JSON.parse(response.getContentText());
     return data.Response === 'True' ? data : null;
   } catch (e) {
