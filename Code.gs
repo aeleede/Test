@@ -16,6 +16,8 @@
 // Only blank cells in C, D, F, G are written — your data is never overwritten.
 // If column H is blank, OMDB is searched by title; if multiple movies match
 // you will be prompted to pick the correct one, and the year is written back.
+// Column C dropdown values are read automatically and matched against OMDB's
+// rating string so the selected value is always a valid dropdown option.
 // ============================================================
 
 const OMDB_API_KEY = 'YOUR_API_KEY_HERE';
@@ -54,6 +56,9 @@ function fillMovieMetadata() {
   const COL_ACTORS   = 5;
   const COL_DIRECTOR = 6;
   const COL_YEAR     = 7;
+
+  // Read the allowed MPAA values from column C's dropdown (if one exists)
+  const mpaaOptions = getDropdownOptions_(sheet, 2, 3);
 
   let updated = 0;
   let alreadyComplete = 0;
@@ -104,7 +109,8 @@ function fillMovieMetadata() {
     if (!movieData) continue;
 
     if (missingMpaa && movieData.Rated && movieData.Rated !== 'N/A') {
-      sheet.getRange(sheetRow, 3).setValue(movieData.Rated);
+      const mpaaValue = matchDropdownOption_(movieData.Rated, mpaaOptions);
+      if (mpaaValue) sheet.getRange(sheetRow, 3).setValue(mpaaValue);
     }
     if (missingGenre && movieData.Genre && movieData.Genre !== 'N/A') {
       sheet.getRange(sheetRow, 4).setValue(movieData.Genre);
@@ -193,6 +199,62 @@ function fetchById_(imdbId) {
   } catch (e) {
     return null;
   }
+}
+
+// Returns the allowed values from a dropdown validation on a given cell,
+// or null if there is no dropdown / the type is unsupported.
+function getDropdownOptions_(sheet, row, col) {
+  const rule = sheet.getRange(row, col).getDataValidation();
+  if (!rule) return null;
+
+  const type = rule.getCriteriaType();
+  const values = rule.getCriteriaValues();
+
+  if (type === SpreadsheetApp.DataValidationCriteria.VALUE_IN_LIST) {
+    return values[0]; // already an array of strings
+  }
+  if (type === SpreadsheetApp.DataValidationCriteria.VALUE_IN_RANGE) {
+    return values[0].getValues().flat().map(String).filter(v => v.trim() !== '');
+  }
+  return null;
+}
+
+// Tries to match an OMDB rating string to one of the dropdown options.
+// Uses case-insensitive exact match first, then common aliases.
+// Returns the matched option string, or the raw value if no dropdown exists,
+// or null if a dropdown exists but no match could be found.
+function matchDropdownOption_(omdbRated, options) {
+  if (!options) return omdbRated; // no dropdown — use value as-is
+
+  // Case-insensitive exact match
+  const lower = omdbRated.toLowerCase();
+  const exact = options.find(o => o.toLowerCase() === lower);
+  if (exact) return exact;
+
+  // Common aliases: maps what OMDB might return to likely dropdown labels
+  const aliases = {
+    'not rated': ['NR', 'Not Rated', 'Unrated', 'UR'],
+    'unrated':   ['NR', 'Not Rated', 'Unrated', 'UR'],
+    'nr':        ['NR', 'Not Rated'],
+    'ur':        ['UR', 'Unrated', 'NR', 'Not Rated'],
+    'g':         ['G'],
+    'pg':        ['PG'],
+    'pg-13':     ['PG-13'],
+    'r':         ['R'],
+    'nc-17':     ['NC-17'],
+    'tv-g':      ['TV-G', 'G'],
+    'tv-pg':     ['TV-PG', 'PG'],
+    'tv-14':     ['TV-14', 'PG-13'],
+    'tv-ma':     ['TV-MA', 'R'],
+  };
+
+  const candidates = aliases[lower] || [];
+  for (const candidate of candidates) {
+    const match = options.find(o => o.toLowerCase() === candidate.toLowerCase());
+    if (match) return match;
+  }
+
+  return null; // dropdown exists but no match — leave cell blank rather than set invalid value
 }
 
 // Exact title + optional year lookup.
