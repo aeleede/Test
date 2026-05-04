@@ -26,7 +26,34 @@ function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu('Movies')
     .addItem('Fill Missing Metadata', 'fillMovieMetadata')
+    .addItem('Test API Connection', 'testApiConnection')
     .addToUi();
+}
+
+function testApiConnection() {
+  if (OMDB_API_KEY === 'YOUR_API_KEY_HERE') {
+    SpreadsheetApp.getUi().alert('API key not set. Replace YOUR_API_KEY_HERE with your OMDB key.');
+    return;
+  }
+
+  const url = `https://www.omdbapi.com/?t=The+Dark+Knight&y=2008&apikey=${OMDB_API_KEY}`;
+  let message;
+
+  try {
+    const response = UrlFetchApp.fetch(url, { muteHttpExceptions: true });
+    const raw = response.getContentText();
+    const data = JSON.parse(raw);
+
+    if (data.Response === 'True') {
+      message = `✓ API key is working!\n\nTest result: ${data.Title} (${data.Year})\nDirector: ${data.Director}`;
+    } else {
+      message = `✗ OMDB returned an error:\n\n"${data.Error}"\n\nMost likely cause: your API key hasn't been activated yet. Check your email for a confirmation link from OMDB and click it, then try again.`;
+    }
+  } catch (e) {
+    message = `✗ Network error:\n\n${e.message}`;
+  }
+
+  SpreadsheetApp.getUi().alert('OMDB API Test', message, SpreadsheetApp.getUi().ButtonSet.OK);
 }
 
 function fillMovieMetadata() {
